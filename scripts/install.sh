@@ -7,7 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="KokoroVoice.app"
 APP_PATH="$SCRIPT_DIR/$APP_NAME"
 INSTALL_PATH="/Applications/$APP_NAME"
-STAGING_PATH="/Applications/${APP_NAME}.installing.$$"
+STAGING_PATH="/Applications/.KokoroVoice.installing.$$"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister"
 REPLACE_EXISTING=0
 BACKUP_PATH=""
 BACKUP_ROOT="${HOME}/Library/Application Support/KokoroVoice/Backups"
@@ -50,6 +51,11 @@ trap cleanup EXIT
 
 if [ "$(uname -m)" != "arm64" ]; then
     echo "[error] Apple silicon is required" >&2
+    exit 1
+fi
+
+if [ ! -x "$LSREGISTER" ]; then
+    echo "[error] LaunchServices registration tool is unavailable: $LSREGISTER" >&2
     exit 1
 fi
 
@@ -120,6 +126,7 @@ mv "$STAGING_PATH" "$INSTALL_PATH"
 INSTALL_PLACED=1
 
 installed_extension="$INSTALL_PATH/Contents/PlugIns/KokoroVoiceExtension.appex"
+"$LSREGISTER" -f -R -trusted "$INSTALL_PATH"
 pluginkit -a "$installed_extension"
 
 registration_visible=0
