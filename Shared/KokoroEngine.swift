@@ -25,7 +25,7 @@ import MLXUtilsLibrary
 // MARK: - Kokoro Engine Errors
 
 /// Errors that can occur during Kokoro TTS operations
-public enum KokoroEngineError: Error, LocalizedError {
+public enum KokoroEngineError: Error, LocalizedError, Sendable {
     case modelNotLoaded
     case voiceNotFound(String)
     case synthesisError(String)
@@ -126,6 +126,7 @@ public actor KokoroEngine {
 
     private var isLoaded = false
     private var isLoading = false
+    private var modelLoadWaiters: [CheckedContinuation<Void, any Error>] = []
     private var modelPath: URL?
 
     // Voice embeddings cache - MLXArray embeddings keyed by voice ID
@@ -150,12 +151,21 @@ public actor KokoroEngine {
     /// - Parameter modelPath: Path to the directory containing model files
     /// - Throws: KokoroEngineError if loading fails
     public func loadModel(from modelPath: URL) async throws {
-        // Prevent concurrent loading
-        guard !isLoading else { return }
         guard !isLoaded else { return }
 
+        // Multiple Audio Unit instances can share this actor within the provider
+        // process. A caller arriving during the first load must await that same
+        // result; returning early would let its unit advertise local readiness
+        // while the shared engine is still unusable.
+        if isLoading {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                modelLoadWaiters.append(continuation)
+            }
+            return
+        }
+
         isLoading = true
-        defer { isLoading = false }
 
         self.modelPath = modelPath
 
@@ -170,15 +180,33 @@ public actor KokoroEngine {
             try await loadVoiceEmbeddings(from: modelPath)
 
             isLoaded = true
+            finishModelLoadWaiters()
             print("KokoroEngine: Model loaded successfully from \(modelPath.path)")
         } catch {
-            throw KokoroEngineError.modelLoadError(error.localizedDescription)
+            let loadError = KokoroEngineError.modelLoadError(error.localizedDescription)
+            finishModelLoadWaiters(throwing: loadError)
+            throw loadError
         }
         #else
         // Stub for platforms without KokoroSwift
         print("KokoroEngine: KokoroSwift not available, using stub implementation")
         isLoaded = true
+        finishModelLoadWaiters()
         #endif
+    }
+
+    private func finishModelLoadWaiters(throwing error: (any Error)? = nil) {
+        isLoading = false
+        let waiters = modelLoadWaiters
+        modelLoadWaiters.removeAll()
+
+        for continuation in waiters {
+            if let error {
+                continuation.resume(throwing: error)
+            } else {
+                continuation.resume()
+            }
+        }
     }
 
     /// Load voice embeddings from safetensors files, voices.npz archive, or individual .npy files

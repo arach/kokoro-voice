@@ -76,6 +76,128 @@ final class StreamingAudioBufferTests: XCTestCase {
         XCTAssertTrue(result.isComplete, "Should be complete when synthesis done and buffer empty")
     }
 
+    func testOfflineBlockingReadDoesNotTurnProducerDelayIntoAudioFrames() async {
+        let buffer = StreamingAudioBuffer()
+
+        // Simulate a cold model followed by a mid-request producer underrun.
+        // An offline consumer must wait across both gaps and return only frames
+        // explicitly enqueued by synthesis.
+        let producer = Task.detached {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            _ = await buffer.enqueue(.audio([1.0, 2.0]))
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            _ = await buffer.enqueue(.audio([3.0, 4.0]))
+            buffer.markComplete()
+        }
+
+        var output = [Float](repeating: 999.0, count: 8)
+        let result = output.withUnsafeMutableBufferPointer { ptr in
+            buffer.readFramesBlocking(into: ptr.baseAddress!, count: 8)
+        }
+        await producer.value
+
+        XCTAssertEqual(result.framesRead, 4)
+        XCTAssertTrue(result.isComplete)
+        XCTAssertTrue(result.wasSpeech)
+        XCTAssertEqual(Array(output.prefix(4)), [1.0, 2.0, 3.0, 4.0])
+        XCTAssertEqual(
+            Array(output.suffix(4)),
+            [999.0, 999.0, 999.0, 999.0],
+            "Producer wait time must not be materialized as silence frames"
+        )
+    }
+
+    func testOfflineBlockingReadWakesOnReset() async {
+        let buffer = StreamingAudioBuffer()
+        let canceller = Task.detached {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            buffer.reset()
+        }
+
+        var output = [Float](repeating: 999.0, count: 8)
+        let result = output.withUnsafeMutableBufferPointer { ptr in
+            buffer.readFramesBlocking(into: ptr.baseAddress!, count: 8)
+        }
+        await canceller.value
+
+        XCTAssertEqual(result.framesRead, 0)
+        XCTAssertTrue(result.isComplete)
+        XCTAssertFalse(result.hadError)
+    }
+
+    func testOfflineBlockingReadWakesOnFailure() async {
+        let buffer = StreamingAudioBuffer()
+        let failure = Task.detached {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            buffer.markFailed(error: NSError(domain: "Test", code: 1))
+        }
+
+        var output = [Float](repeating: 999.0, count: 8)
+        let result = output.withUnsafeMutableBufferPointer { ptr in
+            buffer.readFramesBlocking(into: ptr.baseAddress!, count: 8)
+        }
+        await failure.value
+
+        XCTAssertEqual(result.framesRead, 0)
+        XCTAssertTrue(result.isComplete)
+        XCTAssertTrue(result.hadError)
+    }
+
+    func testOfflineBlockingReadPreservesIntentionalSilence() async {
+        let buffer = StreamingAudioBuffer()
+        let producer = Task.detached {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            _ = await buffer.enqueue(.silence(frameCount: 3))
+            buffer.markComplete()
+        }
+
+        var output = [Float](repeating: 999.0, count: 8)
+        let result = output.withUnsafeMutableBufferPointer { ptr in
+            buffer.readFramesBlocking(into: ptr.baseAddress!, count: 8)
+        }
+        await producer.value
+
+        XCTAssertEqual(result.framesRead, 3)
+        XCTAssertTrue(result.isComplete)
+        XCTAssertFalse(result.wasSpeech)
+        XCTAssertEqual(Array(output.prefix(3)), [0.0, 0.0, 0.0])
+        XCTAssertEqual(Array(output.suffix(5)), Array(repeating: 999.0, count: 5))
+    }
+
+    func testOfflineBlockingReadDrainsPastBackpressureLimit() async {
+        let buffer = StreamingAudioBuffer()
+        let chunkSize = 4_096
+        let totalFrames = Int(StreamingAudioBuffer.maxBufferedFrames) + chunkSize
+
+        let producer = Task.detached {
+            var framesRemaining = totalFrames
+            while framesRemaining > 0 {
+                let count = min(chunkSize, framesRemaining)
+                let continued = await buffer.enqueue(
+                    .audio([Float](repeating: 0.25, count: count))
+                )
+                if !continued { break }
+                framesRemaining -= count
+            }
+            buffer.markComplete()
+        }
+
+        var output = [Float](repeating: 999.0, count: totalFrames + 64)
+        let result = output.withUnsafeMutableBufferPointer { ptr in
+            buffer.readFramesBlocking(
+                into: ptr.baseAddress!,
+                count: UInt32(ptr.count)
+            )
+        }
+        await producer.value
+
+        XCTAssertEqual(Int(result.framesRead), totalFrames)
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(output[0], 0.25)
+        XCTAssertEqual(output[totalFrames - 1], 0.25)
+        XCTAssertEqual(output[totalFrames], 999.0)
+    }
+
     // MARK: - Partial Read Tests
 
     func testPartialRead() async {

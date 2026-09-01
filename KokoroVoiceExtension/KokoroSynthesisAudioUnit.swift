@@ -39,11 +39,36 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
     /// Current speech request being processed
     private var currentRequest: AVSpeechSynthesisProviderRequest?
 
-    /// Flag indicating if the model is loaded and ready
-    private var isModelReady = false
+    /// Model readiness is protected by `stateLock` so a request cannot miss the
+    /// transition from loading to ready (or wait forever after a load failure).
+    private enum ModelLoadState {
+        case loading
+        case ready
+        case failed(String)
+    }
+
+    private enum RequestReadiness {
+        case ready
+        case queued
+        case failed(String)
+    }
+
+    private enum SynthesisMode {
+        case streaming
+        case buffered
+    }
+
+    private struct PendingSynthesis {
+        let segments: [SSMLParser.SynthesisSegment]
+        let voiceId: String
+        let buffer: StreamingAudioBuffer
+        let mode: SynthesisMode
+    }
+
+    private var _modelLoadState: ModelLoadState = .loading
 
     /// Pending requests queue (for when model isn't ready) - backing storage
-    private var _pendingRequests: [AVSpeechSynthesisProviderRequest] = []
+    private var _pendingRequests: [PendingSynthesis] = []
 
     // MARK: - Streaming Mode State
 
@@ -148,6 +173,14 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
         set { withStateLock { _activeStreamingBuffer = newValue } }
     }
 
+    private func clearActiveStreamingBuffer(ifCurrent buffer: StreamingAudioBuffer) {
+        withStateLock {
+            if _activeStreamingBuffer === buffer {
+                _activeStreamingBuffer = nil
+            }
+        }
+    }
+
     private var currentSynthesisTask: Task<Void, Never>? {
         get { withStateLock { _currentSynthesisTask } }
         set { withStateLock { _currentSynthesisTask = newValue } }
@@ -169,21 +202,57 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
         set { withStateLock { _legacySynthesisCompletedEmpty = newValue } }
     }
 
-    // Thread-safe operations for pending requests
-    private func appendPendingRequest(_ request: AVSpeechSynthesisProviderRequest) {
-        withStateLock { _pendingRequests.append(request) }
+    // Thread-safe operations for model readiness and pending requests
+    private func readiness(for pending: PendingSynthesis) -> RequestReadiness {
+        withStateLock {
+            switch _modelLoadState {
+            case .loading:
+                _pendingRequests.append(pending)
+                return .queued
+            case .ready:
+                return .ready
+            case .failed(let message):
+                return .failed(message)
+            }
+        }
     }
 
-    private func takePendingRequests() -> [AVSpeechSynthesisProviderRequest] {
+    private func finishModelLoadingSuccessfully() -> [PendingSynthesis] {
         withStateLock {
+            _modelLoadState = .ready
             let requests = _pendingRequests
             _pendingRequests.removeAll()
             return requests
         }
     }
 
-    private func clearPendingRequests() {
-        withStateLock { _pendingRequests.removeAll() }
+    private func finishModelLoadingWithFailure(_ message: String) {
+        let requests = withStateLock { () -> [PendingSynthesis] in
+            _modelLoadState = .failed(message)
+            let requests = _pendingRequests
+            _pendingRequests.removeAll()
+            return requests
+        }
+
+        let error = NSError(
+            domain: "KokoroSynthesisAudioUnit.ModelLoading",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+        for pending in requests {
+            pending.buffer.markFailed(error: error)
+        }
+    }
+
+    private func cancelPendingRequests() {
+        let requests = withStateLock { () -> [PendingSynthesis] in
+            let requests = _pendingRequests
+            _pendingRequests.removeAll()
+            return requests
+        }
+        for pending in requests {
+            pending.buffer.reset()
+        }
     }
 
     private func withStateLock<T>(_ body: () -> T) -> T {
@@ -205,19 +274,23 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
     private func loadModel() async {
         // Find model resources
         guard let resourceURL = findModelResourceURL() else {
-            print("KokoroSynthesisAudioUnit: Could not find model resources")
+            let message = "Could not find model resources"
+            print("KokoroSynthesisAudioUnit: \(message)")
+            finishModelLoadingWithFailure(message)
             return
         }
 
         do {
             try await KokoroEngine.shared.loadModel(from: resourceURL)
-            isModelReady = true
             print("KokoroSynthesisAudioUnit: Model loaded successfully")
 
-            // Process any pending requests
-            await processPendingRequests()
+            // Publish readiness and take pending requests in one locked operation,
+            // preventing a request from being queued after the loader drains it.
+            let pendingRequests = finishModelLoadingSuccessfully()
+            await processPendingRequests(pendingRequests)
         } catch {
             print("KokoroSynthesisAudioUnit: Failed to load model: \(error)")
+            finishModelLoadingWithFailure(error.localizedDescription)
         }
     }
 
@@ -254,25 +327,26 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
     }
 
     /// Process any requests that were queued while model was loading
-    private func processPendingRequests() async {
-        // Atomically take all pending requests to avoid race with new incoming requests
-        let requests = takePendingRequests()
+    private func processPendingRequests(_ requests: [PendingSynthesis]) async {
+        for pending in requests {
+            await synthesize(pending)
+        }
+    }
 
-        for request in requests {
-            if useStreamingMode {
-                let ssml = request.ssmlRepresentation
-                let voiceIdentifier = request.voice.identifier
-                let segments = SSMLParser.parse(ssml)
-                let voiceId = voiceIdentifier.replacingOccurrences(of: Constants.voiceIdentifierPrefix, with: "")
-
-                let buffer = StreamingAudioBuffer()
-                activeStreamingBuffer = buffer
-                await synthesizeSegmentsStreaming(segments, voiceId: voiceId, into: buffer)
-            } else {
-                let ssml = request.ssmlRepresentation
-                let voiceIdentifier = request.voice.identifier
-                await performSynthesisLegacy(ssml: ssml, voiceIdentifier: voiceIdentifier)
-            }
+    private func synthesize(_ pending: PendingSynthesis) async {
+        switch pending.mode {
+        case .streaming:
+            await synthesizeSegmentsStreaming(
+                pending.segments,
+                voiceId: pending.voiceId,
+                into: pending.buffer
+            )
+        case .buffered:
+            await synthesizeSegmentsBuffered(
+                pending.segments,
+                voiceId: pending.voiceId,
+                into: pending.buffer
+            )
         }
     }
 
@@ -310,6 +384,7 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
 
         // Cancel any existing synthesis
         cancelCurrentSynthesis()
+        cancelPendingRequests()
 
         // Store current request
         currentRequest = speechRequest
@@ -318,36 +393,48 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
         hasEmittedFirstSpeech = false
         #endif
 
-        // If model isn't ready, queue the request
-        guard isModelReady else {
-            print("KokoroSynthesisAudioUnit: Model not ready, queueing request")
-            appendPendingRequest(speechRequest)
-            return
-        }
-
-        // Check streaming mode
-        guard useStreamingMode else {
-            synthesizeSpeechRequestLegacy(speechRequest)
-            return
-        }
-
         // Parse SSML
         let segments = SSMLParser.parse(speechRequest.ssmlRepresentation)
         let voiceId = speechRequest.voice.identifier.replacingOccurrences(of: Constants.voiceIdentifierPrefix, with: "")
 
-        print("KokoroSynthesisAudioUnit: Synthesizing (streaming) for voice: \(voiceId), segments: \(segments.count)")
+        print(
+            "KokoroSynthesisAudioUnit: Synthesizing for voice: \(voiceId), " +
+            "segments: \(segments.count), offline=\(isRenderingOffline)"
+        )
 
         // Create fresh streaming buffer
         let buffer = StreamingAudioBuffer()
         activeStreamingBuffer = buffer
 
-        // Copy segments to ensure Sendable safety (SynthesisSegment is Equatable/value type)
-        let segmentsCopy = segments
+        // The buffer must be visible before a cold-model request returns. An
+        // offline host may begin pulling immediately; it will block on this
+        // buffer until the loader and synthesis producer make progress instead
+        // of falling through to an unbounded legacy-silence render.
+        let pending = PendingSynthesis(
+            segments: segments,
+            voiceId: voiceId,
+            buffer: buffer,
+            mode: useStreamingMode ? .streaming : .buffered
+        )
+        switch readiness(for: pending) {
+        case .queued:
+            print("KokoroSynthesisAudioUnit: Model not ready, queueing request")
+            return
+        case .failed(let message):
+            buffer.markFailed(error: NSError(
+                domain: "KokoroSynthesisAudioUnit.ModelLoading",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            ))
+            return
+        case .ready:
+            break
+        }
 
         // Start synthesis task
         let task = Task { @Sendable [weak self] in
             guard let self = self else { return }
-            await self.synthesizeSegmentsStreaming(segmentsCopy, voiceId: voiceId, into: buffer)
+            await self.synthesize(pending)
         }
         currentSynthesisTask = task
     }
@@ -437,11 +524,76 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
         }
     }
 
+    /// Buffered fallback for an output configuration that cannot use progressive
+    /// streaming. Generation completes before any chunks are published, but the
+    /// same request-owned `StreamingAudioBuffer` carries readiness and terminal
+    /// state so cold-model and offline renders remain bounded.
+    private func synthesizeSegmentsBuffered(
+        _ segments: [SSMLParser.SynthesisSegment],
+        voiceId: String,
+        into buffer: StreamingAudioBuffer
+    ) async {
+        do {
+            var chunks: [StreamingAudioBuffer.AudioChunk] = []
+            var segmentCount = 0
+
+            for segment in segments {
+                segmentCount += 1
+                if segmentCount > Self.maxSSMLSegments {
+                    print("KokoroSynthesisAudioUnit: SSML segment limit (\(Self.maxSSMLSegments)) reached, truncating")
+                    break
+                }
+
+                try Task.checkCancellation()
+
+                if segment.pauseBefore > 0 {
+                    let clampedPause = min(Float(segment.pauseBefore), StreamingAudioBuffer.maxPauseDuration)
+                    let silenceFrames = Int(clampedPause * Float(Constants.sampleRate))
+                    if silenceFrames > 0 && silenceFrames < Int.max / 2 {
+                        chunks.append(.silence(frameCount: silenceFrames))
+                    }
+                }
+
+                let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+
+                try Task.checkCancellation()
+                let audio = try await KokoroEngine.shared.generateAudio(
+                    text: text,
+                    voiceId: voiceId,
+                    speed: segment.rate
+                )
+                let validated = audio.map { sample in
+                    sample.isFinite ? sample : 0.0
+                }
+
+                var offset = 0
+                while offset < validated.count {
+                    let end = min(offset + Self.maxChunkSize, validated.count)
+                    chunks.append(.audio(Array(validated[offset..<end])))
+                    offset = end
+                }
+            }
+
+            for chunk in chunks {
+                let shouldContinue = await buffer.enqueue(chunk)
+                if !shouldContinue { return }
+            }
+            buffer.markComplete()
+        } catch is CancellationError {
+            print("KokoroSynthesisAudioUnit: Buffered synthesis cancelled")
+            buffer.markComplete()
+        } catch {
+            print("KokoroSynthesisAudioUnit: Buffered synthesis error: \(error)")
+            buffer.markFailed(error: error)
+        }
+    }
+
     /// Cancel the current speech request
     public override func cancelSpeechRequest() {
         print("KokoroSynthesisAudioUnit: Cancelling speech request")
         cancelCurrentSynthesis()
-        clearPendingRequests()
+        cancelPendingRequests()
     }
 
     /// Cancel current synthesis (thread-safe)
@@ -499,16 +651,24 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
         frameCount: AVAudioFrameCount,
         actionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>
     ) -> OSStatus {
-        // Wait for minimum buffer before starting playback
-        guard buffer.hasMinimumBuffer else {
-            vDSP_vclr(output, 1, vDSP_Length(frameCount))
-            return noErr
+        let result: StreamingAudioBuffer.ReadResult
+        if isRenderingOffline {
+            // Offline hosts pull substantially faster than realtime. Blocking is
+            // explicitly allowed in this mode and prevents producer latency or
+            // an underrun from becoming minutes of synthesized silence.
+            result = buffer.readFramesBlocking(into: output, count: frameCount)
+        } else {
+            // Realtime rendering must never block. Wait for the startup cushion
+            // and preserve the existing silence-on-underrun behavior.
+            guard buffer.hasMinimumBuffer else {
+                vDSP_vclr(output, 1, vDSP_Length(frameCount))
+                return noErr
+            }
+            result = buffer.readFrames(into: output, count: frameCount)
         }
 
-        // Read frames from streaming buffer (never blocks)
-        let result = buffer.readFrames(into: output, count: frameCount)
-
-        // Fill remainder with silence if underrun
+        // A realtime underrun is silence. In offline mode a short read can only
+        // be terminal, so this is at most the unused tail of the final block.
         if result.framesRead < frameCount {
             let remaining = frameCount - result.framesRead
             vDSP_vclr(output + Int(result.framesRead), 1, vDSP_Length(remaining))
@@ -538,8 +698,9 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
                 print("KokoroSynthesisAudioUnit: Streaming playback complete")
             }
 
-            // Clean up reference
-            self.activeStreamingBuffer = nil
+            // An older render may finish after a replacement request has already
+            // installed a new buffer. Clear only the buffer that completed.
+            self.clearActiveStreamingBuffer(ifCurrent: buffer)
         }
 
         return noErr
