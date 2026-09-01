@@ -44,6 +44,7 @@ targets:
         DEFINES_MODULE: YES
         SKIP_INSTALL: YES
         INFOPLIST_FILE: Shared/Info.plist
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) KOKORO_LOCAL_UNSIGNED"
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
@@ -61,9 +62,6 @@ targets:
         type: group
         excludes:
           - "*.entitlements"
-      - path: Resources
-        type: folder
-        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.openscout.kokorovoice
@@ -101,6 +99,9 @@ targets:
         type: group
         excludes:
           - "*.entitlements"
+      - path: Resources
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.openscout.kokorovoice.extension

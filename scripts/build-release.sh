@@ -64,8 +64,8 @@ APP_PLIST="$APP_PATH/Contents/Info.plist"
 APP_EXTENSION="$APP_PATH/Contents/PlugIns/KokoroVoiceExtension.appex"
 APP_FRAMEWORK="$APP_PATH/Contents/Frameworks/KokoroVoiceShared.framework"
 EXTENSION_ENTITLEMENTS="$PROJECT_DIR/KokoroVoiceExtension/KokoroVoiceExtension-unsigned.entitlements"
-APP_MODEL="$APP_PATH/Contents/Resources/Resources/kokoro-v1_0.safetensors"
-APP_VOICES="$APP_PATH/Contents/Resources/Resources/voices"
+APP_MODEL="$APP_EXTENSION/Contents/Resources/Resources/kokoro-v1_0.safetensors"
+APP_VOICES="$APP_EXTENSION/Contents/Resources/Resources/voices"
 
 for required_path in "$APP_EXECUTABLE" "$APP_PLIST" "$APP_EXTENSION" "$APP_FRAMEWORK" "$EXTENSION_ENTITLEMENTS" "$APP_MODEL" "$APP_VOICES"; do
     if [ ! -e "$required_path" ]; then

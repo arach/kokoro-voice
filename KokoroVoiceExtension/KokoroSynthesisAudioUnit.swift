@@ -225,32 +225,19 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
     private func findModelResourceURL() -> URL? {
         let fileManager = FileManager.default
 
-        // For extensions embedded in app: navigate from extension bundle to containing app's resources
-        // Extension is at: KokoroVoice.app/Contents/PlugIns/KokoroVoiceExtension.appex
-        // Resources are at: KokoroVoice.app/Contents/Resources/Resources/
-        if let extensionBundle = Bundle(for: type(of: self)).bundleURL as URL? {
-            // Go up from .appex to PlugIns, then to Contents, then to Resources
-            let appContentsURL = extensionBundle
-                .deletingLastPathComponent()  // Remove KokoroVoiceExtension.appex
-                .deletingLastPathComponent()  // Remove PlugIns
-            let appResourcesURL = appContentsURL.appendingPathComponent("Resources/Resources")
+        // A sandboxed extension can reliably read its own bundle, not arbitrary
+        // files in the containing app. The release build therefore packages the
+        // single model copy under this extension's Resources directory.
+        let extensionBundle = Bundle(for: type(of: self))
+        let bundledCandidates = [
+            extensionBundle.resourceURL?.appendingPathComponent("Resources"),
+            extensionBundle.resourceURL,
+        ].compactMap { $0 }
 
-            print("KokoroSynthesisAudioUnit: Checking app resources at \(appResourcesURL.path)")
-            if fileManager.fileExists(atPath: appResourcesURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
-                return appResourcesURL
-            }
-
-            // Also try without nested Resources folder
-            let directResourcesURL = appContentsURL.appendingPathComponent("Resources")
-            print("KokoroSynthesisAudioUnit: Checking direct resources at \(directResourcesURL.path)")
-            if fileManager.fileExists(atPath: directResourcesURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
-                return directResourcesURL
-            }
-        }
-
-        // Try extension's own bundle resources
-        if let bundleURL = Bundle.main.resourceURL?.appendingPathComponent("Resources") {
-            if fileManager.fileExists(atPath: bundleURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
+        for bundleURL in bundledCandidates {
+            if fileManager.fileExists(
+                atPath: bundleURL.appendingPathComponent("kokoro-v1_0.safetensors").path
+            ) {
                 return bundleURL
             }
         }
@@ -261,12 +248,6 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
             if fileManager.fileExists(atPath: modelsURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
                 return modelsURL
             }
-        }
-
-        // Try main bundle directly
-        if let bundleURL = Bundle.main.resourceURL,
-           fileManager.fileExists(atPath: bundleURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
-            return bundleURL
         }
 
         return nil

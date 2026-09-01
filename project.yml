@@ -51,9 +51,6 @@ targets:
         type: group
         excludes:
           - "*.entitlements"
-      - path: Resources
-        type: folder
-        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kokorovoice.app
@@ -89,6 +86,9 @@ targets:
         type: group
         excludes:
           - "*.entitlements"
+      - path: Resources
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kokorovoice.app.extension

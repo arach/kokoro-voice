@@ -148,7 +148,9 @@ public class VoiceManager: NSObject, ObservableObject {
                 // Ensure model is loaded
                 let modelLoaded = await KokoroEngine.shared.isModelLoaded
                 if !modelLoaded {
-                    let modelPath = Bundle.main.resourceURL ?? Bundle.main.bundleURL
+                    guard let modelPath = ModelResourceLocator.firstAvailableURL() else {
+                        throw KokoroEngineError.modelNotLoaded
+                    }
                     try await KokoroEngine.shared.loadModel(from: modelPath)
                 }
 

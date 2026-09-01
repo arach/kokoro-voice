@@ -10,6 +10,7 @@ INSTALL_PATH="/Applications/$APP_NAME"
 STAGING_PATH="/Applications/${APP_NAME}.installing.$$"
 REPLACE_EXISTING=0
 BACKUP_PATH=""
+BACKUP_ROOT="${HOME}/Library/Application Support/KokoroVoice/Backups"
 INSTALL_PLACED=0
 
 if [ "${1:-}" = "--replace" ]; then
@@ -62,8 +63,8 @@ APP_EXECUTABLE="$APP_PATH/Contents/MacOS/KokoroVoice"
 APP_PLIST="$APP_PATH/Contents/Info.plist"
 APP_EXTENSION="$APP_PATH/Contents/PlugIns/KokoroVoiceExtension.appex"
 EXTENSION_PLIST="$APP_EXTENSION/Contents/Info.plist"
-APP_MODEL="$APP_PATH/Contents/Resources/Resources/kokoro-v1_0.safetensors"
-APP_VOICES="$APP_PATH/Contents/Resources/Resources/voices"
+APP_MODEL="$APP_EXTENSION/Contents/Resources/Resources/kokoro-v1_0.safetensors"
+APP_VOICES="$APP_EXTENSION/Contents/Resources/Resources/voices"
 
 for required_path in "$APP_EXECUTABLE" "$APP_PLIST" "$APP_EXTENSION" "$EXTENSION_PLIST" "$APP_MODEL" "$APP_VOICES"; do
     if [ ! -e "$required_path" ]; then
@@ -106,7 +107,9 @@ if [ -e "$INSTALL_PATH" ]; then
         echo "[error] $INSTALL_PATH already exists; rerun with --replace after reviewing it" >&2
         exit 1
     fi
-    BACKUP_PATH="/Applications/KokoroVoice.backup.$(date '+%Y%m%d-%H%M%S').app"
+    mkdir -p "$BACKUP_ROOT"
+    BACKUP_PATH="$BACKUP_ROOT/KokoroVoice.$(date '+%Y%m%d-%H%M%S').app"
+    pluginkit -r "$INSTALL_PATH/Contents/PlugIns/KokoroVoiceExtension.appex" >/dev/null 2>&1 || true
     mv "$INSTALL_PATH" "$BACKUP_PATH"
     echo "Existing install preserved at: $BACKUP_PATH"
 fi
@@ -121,7 +124,8 @@ pluginkit -a "$installed_extension"
 
 registration_visible=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if pluginkit -m -A -D | grep -Fq 'app.openscout.kokorovoice.extension'; then
+    if pluginkit -m -A -D -vv -i 'app.openscout.kokorovoice.extension' |
+       grep -Fq "Path = $installed_extension"; then
         registration_visible=1
         break
     fi

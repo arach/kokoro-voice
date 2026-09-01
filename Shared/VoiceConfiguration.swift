@@ -121,7 +121,20 @@ public final class VoiceConfigurationManager: @unchecked Sendable {
     public init(suiteName: String?) {
         self.suiteName = suiteName ?? "standard"
 
-        // Try App Group first, fall back to standard UserDefaults for unsigned builds
+        #if KOKORO_LOCAL_UNSIGNED
+        // The local ad-hoc build cannot carry an application-group entitlement.
+        // UserDefaults(suiteName:) still returns an object in that situation, so
+        // select standard defaults explicitly and publish all bundled voices.
+        if suiteName == Constants.appGroupIdentifier {
+            self.userDefaults = UserDefaults.standard
+            self.isUsingAppGroup = false
+            print("VoiceConfigurationManager: Local unsigned build; using standard UserDefaults (all voices enabled)")
+            return
+        }
+        #endif
+
+        // Signed builds share configuration through their App Group. Custom
+        // suite names remain supported for isolated tests.
         if let suiteName = suiteName,
            let groupDefaults = UserDefaults(suiteName: suiteName) {
             self.userDefaults = groupDefaults
@@ -129,7 +142,7 @@ public final class VoiceConfigurationManager: @unchecked Sendable {
         } else {
             self.userDefaults = UserDefaults.standard
             self.isUsingAppGroup = false
-            print("VoiceConfigurationManager: App Group unavailable, using standard UserDefaults (all voices enabled)")
+            print("VoiceConfigurationManager: Shared suite unavailable, using standard UserDefaults (all voices enabled)")
         }
     }
 

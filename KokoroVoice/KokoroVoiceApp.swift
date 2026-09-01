@@ -70,28 +70,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadModel() async {
-        // XcodeGen copies the Resources folder into the app resources, so the
-        // production bundle has a nested Resources/Resources directory.
-        let possiblePaths = [
-            Bundle.main.resourceURL?.appendingPathComponent("Resources"),
-            Bundle.main.resourceURL,
-        ].compactMap { $0 }
-
-        for resourceURL in possiblePaths {
-            let modelFile = resourceURL.appendingPathComponent("kokoro-v1_0.safetensors")
-            if FileManager.default.fileExists(atPath: modelFile.path) {
-                do {
-                    try await KokoroEngine.shared.loadModel(from: resourceURL)
-                    print("KokoroVoice: Model loaded successfully from \(resourceURL.path)")
-                    return
-                } catch {
-                    print("KokoroVoice: Failed to load model from \(resourceURL.path): \(error)")
-                }
-            }
+        guard let resourceURL = ModelResourceLocator.firstAvailableURL() else {
+            print("KokoroVoice: Model not found in the embedded extension")
+            return
         }
 
-        print("KokoroVoice: Model not found. Please download model files to Resources/")
-        print("KokoroVoice: Expected: kokoro-v1_0.safetensors and voices/*.safetensors")
+        do {
+            try await KokoroEngine.shared.loadModel(from: resourceURL)
+            print("KokoroVoice: Model loaded successfully from \(resourceURL.path)")
+        } catch {
+            print("KokoroVoice: Failed to load model from \(resourceURL.path): \(error)")
+        }
     }
 }
 

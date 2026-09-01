@@ -18,6 +18,8 @@ The local hardening changes:
 - validate the exact app, extension, models, and voice count;
 - ad-hoc sign the Audio Unit extension with the App Sandbox entitlement that
   PluginKit requires;
+- keep the single model copy inside the sandboxed extension bundle so the
+  provider can read it at runtime;
 - use a distinct OpenScout bundle and Audio Unit identity;
 - ad-hoc sign the local app and fail closed if macOS registration fails;
 - never strip Gatekeeper quarantine attributes.
