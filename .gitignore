@@ -13,11 +13,12 @@ DerivedData/
 # Swift Package Manager
 .build/
 .swiftpm/
-Package.resolved
+# Package.resolved is committed on the local hardening branch for reproducibility.
 
 # Build products
 build/
 Build/
+dist/
 
 # Dependencies
 Pods/

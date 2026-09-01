@@ -48,14 +48,15 @@ struct KokoroVoiceApp: App {
 
 // MARK: - App Delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("KokoroVoice: Application launched")
 
         // Load model in background
-        Task {
-            await loadModel()
+        Task { [weak self] in
+            await self?.loadModel()
         }
     }
 
@@ -69,23 +70,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadModel() async {
-        // Try multiple locations for model files
+        // XcodeGen copies the Resources folder into the app resources, so the
+        // production bundle has a nested Resources/Resources directory.
         let possiblePaths = [
-            // 1. App bundle resources (production)
+            Bundle.main.resourceURL?.appendingPathComponent("Resources"),
             Bundle.main.resourceURL,
-            // 2. Development: project Resources directory
-            Bundle.main.bundleURL
-                .deletingLastPathComponent() // Contents
-                .deletingLastPathComponent() // KokoroVoice.app
-                .deletingLastPathComponent() // Debug
-                .deletingLastPathComponent() // Products
-                .deletingLastPathComponent() // Build
-                .deletingLastPathComponent() // DerivedData/...
-                .appendingPathComponent("SourcePackages")
-                .deletingLastPathComponent()
-                .appendingPathComponent("Resources"),
-            // 3. Fallback: hardcoded development path
-            URL(fileURLWithPath: "/Users/tag/Documents/workspace-playground/kokoro-voice/KokoroVoice/Resources")
         ].compactMap { $0 }
 
         for resourceURL in possiblePaths {

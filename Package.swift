@@ -22,7 +22,7 @@ let package = Package(
     dependencies: [
         // Use local patched version (removed MLXFast import, now part of MLX)
         .package(path: "LocalPackages/kokoro-ios"),
-        .package(url: "https://github.com/mlalma/MLXUtilsLibrary.git", branch: "main"),
+        .package(url: "https://github.com/mlalma/MLXUtilsLibrary.git", exact: "0.0.6"),
     ],
     targets: [
         // Shared library with constants, voice configuration, and engine wrapper
@@ -32,20 +32,19 @@ let package = Package(
                 .product(name: "KokoroSwift", package: "kokoro-ios"),
                 .product(name: "MLXUtilsLibrary", package: "MLXUtilsLibrary"),
             ],
-            path: "Shared"
+            path: "Shared",
+            exclude: ["Info.plist"]
         ),
 
         // Extension with SSML parser and Audio Unit
         .target(
             name: "KokoroVoiceExtension",
-            dependencies: [
-                "KokoroVoiceShared",
-                .product(name: "KokoroSwift", package: "kokoro-ios"),
-            ],
+            dependencies: ["KokoroVoiceShared"],
             path: "KokoroVoiceExtension",
             exclude: [
                 "Info.plist",
-                "KokoroVoiceExtension.entitlements"
+                "KokoroVoiceExtension.entitlements",
+                "KokoroVoiceExtension-unsigned.entitlements"
             ]
         ),
 

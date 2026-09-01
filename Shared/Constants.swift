@@ -87,10 +87,10 @@ public enum Constants {
     /// Audio Unit component description
     public enum AudioUnit {
         /// Manufacturer code (4 characters) - "KOKO"
-        public static let manufacturer: String = "KOKO"
+        public static let manufacturer: String = "OSCT"
 
         /// Subtype code (4 characters)
-        public static let subtype: String = "KVSP"
+        public static let subtype: String = "KOKV"
 
         /// Type code for speech synthesizer
         public static let type: String = "ausp"

@@ -1,120 +1,95 @@
 #!/bin/bash
-# build-release.sh
-# Build KokoroVoice for unsigned distribution
-# No Apple Developer account required
+# Build a verified, ad-hoc-signed local KokoroVoice app.
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BUILD_DIR="$PROJECT_DIR/build/Release"
 DIST_DIR="$PROJECT_DIR/dist"
+LOG_DIR="$PROJECT_DIR/build"
+CODEX_BUILD_CACHE_ROOT="${HOME}/Library/Caches/codex-builds"
+XCODE_RESOLUTION_SOURCE="$PROJECT_DIR/XcodePackage.resolved"
 
-echo "Building KokoroVoice (Unsigned Release)"
-echo "========================================"
-echo ""
+for command_name in xcodegen xcodebuild codesign ditto; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "[error] Required command is missing: $command_name" >&2
+        exit 1
+    fi
+done
 
-# Check for xcodegen
-if ! command -v xcodegen &> /dev/null; then
-    echo "Error: xcodegen is required but not installed."
-    echo "Install with: brew install xcodegen"
-    exit 1
+"$SCRIPT_DIR/download-models.sh"
+
+mkdir -p "$CODEX_BUILD_CACHE_ROOT"
+if [ -n "${KOKORO_DERIVED_DATA_DIR:-}" ]; then
+    DERIVED_DATA_DIR="$KOKORO_DERIVED_DATA_DIR"
+    mkdir -p "$DERIVED_DATA_DIR"
+else
+    DERIVED_DATA_DIR="$(mktemp -d "$CODEX_BUILD_CACHE_ROOT/kokoro-voice.XXXXXXXX")"
 fi
 
-# Check for xcodebuild
-if ! command -v xcodebuild &> /dev/null; then
-    echo "Error: Xcode command line tools are required."
-    echo "Install with: xcode-select --install"
-    exit 1
-fi
+echo "DerivedData: $DERIVED_DATA_DIR"
 
-# Clean previous builds
-echo "Cleaning previous builds..."
-rm -rf "$BUILD_DIR"
-rm -rf "$DIST_DIR"
-mkdir -p "$DIST_DIR"
+rm -rf "$DIST_DIR" "$LOG_DIR"
+mkdir -p "$DIST_DIR" "$LOG_DIR"
 
-# Generate Xcode project with unsigned configuration
-echo "Generating Xcode project (unsigned)..."
 cd "$PROJECT_DIR"
 xcodegen generate --spec project-unsigned.yml
 
-# Build the app
-echo ""
-echo "Building KokoroVoice..."
+if [ ! -f "$XCODE_RESOLUTION_SOURCE" ]; then
+    echo "[error] Missing Xcode dependency lock: $XCODE_RESOLUTION_SOURCE" >&2
+    exit 1
+fi
+XCODE_RESOLUTION_DIR="$PROJECT_DIR/KokoroVoice.xcodeproj/project.xcworkspace/xcshareddata/swiftpm"
+mkdir -p "$XCODE_RESOLUTION_DIR"
+cp "$XCODE_RESOLUTION_SOURCE" "$XCODE_RESOLUTION_DIR/Package.resolved"
+
+BUILD_LOG="$LOG_DIR/xcodebuild.log"
+set -o pipefail
 xcodebuild \
     -project KokoroVoice.xcodeproj \
     -scheme KokoroVoice \
     -configuration Release \
-    -derivedDataPath "$PROJECT_DIR/build/DerivedData" \
-    CODE_SIGN_IDENTITY="-" \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$DERIVED_DATA_DIR" \
+    -onlyUsePackageVersionsFromResolvedFile \
+    CODE_SIGN_IDENTITY='-' \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGNING_ALLOWED=NO \
-    ONLY_ACTIVE_ARCH=NO \
-    clean build 2>&1 | while read line; do
-        # Show progress without too much noise
-        if [[ "$line" == *"Build Succeeded"* ]]; then
-            echo "$line"
-        elif [[ "$line" == *"error:"* ]]; then
-            echo "$line"
-        elif [[ "$line" == *"warning:"* ]] && [[ "$line" != *"deprecated"* ]]; then
-            echo "$line"
-        elif [[ "$line" == *"Compiling"* ]]; then
-            echo -n "."
-        fi
-    done
-echo ""
+    ONLY_ACTIVE_ARCH=YES \
+    build 2>&1 | tee "$BUILD_LOG"
 
-# Find and copy the built app
-APP_PATH=$(find "$PROJECT_DIR/build/DerivedData" -name "KokoroVoice.app" -type d | head -1)
+APP_PATH="$DERIVED_DATA_DIR/Build/Products/Release/KokoroVoice.app"
+APP_EXECUTABLE="$APP_PATH/Contents/MacOS/KokoroVoice"
+APP_PLIST="$APP_PATH/Contents/Info.plist"
+APP_EXTENSION="$APP_PATH/Contents/PlugIns/KokoroVoiceExtension.appex"
+APP_MODEL="$APP_PATH/Contents/Resources/Resources/kokoro-v1_0.safetensors"
+APP_VOICES="$APP_PATH/Contents/Resources/Resources/voices"
 
-if [ -z "$APP_PATH" ]; then
-    echo "Error: Build failed - KokoroVoice.app not found"
+for required_path in "$APP_EXECUTABLE" "$APP_PLIST" "$APP_EXTENSION" "$APP_MODEL" "$APP_VOICES"; do
+    if [ ! -e "$required_path" ]; then
+        echo "[error] Built app is incomplete: $required_path is missing" >&2
+        exit 1
+    fi
+done
+
+voice_count="$(find "$APP_VOICES" -maxdepth 1 -type f -name '*.safetensors' | wc -l | tr -d ' ')"
+model_copy_count="$(find "$APP_PATH" -type f -name 'kokoro-v1_0.safetensors' | wc -l | tr -d ' ')"
+if [ "$voice_count" != "36" ]; then
+    echo "[error] Built app contains $voice_count voices; expected 36" >&2
+    exit 1
+fi
+if [ "$model_copy_count" != "1" ]; then
+    echo "[error] Built app contains $model_copy_count model copies; expected exactly one" >&2
     exit 1
 fi
 
-echo "Copying app to dist..."
-cp -R "$APP_PATH" "$DIST_DIR/"
+codesign --force --deep --sign - --timestamp=none "$APP_PATH"
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
-# Copy install script
-cp "$SCRIPT_DIR/install.sh" "$DIST_DIR/"
+ditto "$APP_PATH" "$DIST_DIR/KokoroVoice.app"
+cp "$SCRIPT_DIR/install.sh" "$DIST_DIR/install.sh"
 chmod +x "$DIST_DIR/install.sh"
+printf '%s\n' "3778042d417811dbbc94cd7aa8784858bbc47429 + local hardening" > "$DIST_DIR/BUILD_SOURCE"
 
-# Copy download script
-cp "$SCRIPT_DIR/download-models.sh" "$DIST_DIR/"
-chmod +x "$DIST_DIR/download-models.sh"
-
-# Check if models exist in Resources
-MODEL_FILE="$PROJECT_DIR/Resources/kokoro-v1_0.safetensors"
-VOICES_DIR="$PROJECT_DIR/Resources/voices"
-
-if [ -f "$MODEL_FILE" ] && [ -d "$VOICES_DIR" ]; then
-    echo "Models found - copying to app bundle..."
-
-    RESOURCES_DEST="$DIST_DIR/KokoroVoice.app/Contents/Resources"
-    mkdir -p "$RESOURCES_DEST/voices"
-
-    cp "$MODEL_FILE" "$RESOURCES_DEST/"
-    cp "$VOICES_DIR"/*.safetensors "$RESOURCES_DEST/voices/" 2>/dev/null || true
-    cp "$VOICES_DIR"/*.pt "$RESOURCES_DEST/voices/" 2>/dev/null || true
-
-    echo "Models embedded in app bundle"
-else
-    echo ""
-    echo "Note: Model files not found in Resources/"
-    echo "Users will need to run download-models.sh before using the app"
-fi
-
-# Create version info
-echo "1.0.0" > "$DIST_DIR/VERSION"
-date "+%Y-%m-%d %H:%M:%S" > "$DIST_DIR/BUILD_DATE"
-
-echo ""
-echo "Build complete!"
-echo ""
-echo "Output: $DIST_DIR/"
-ls -la "$DIST_DIR/"
-echo ""
-echo "Next steps:"
-echo "1. Test locally: cd $DIST_DIR && ./install.sh"
-echo "2. Create DMG: ./scripts/create-dmg.sh"
+echo "Built and verified: $DIST_DIR/KokoroVoice.app"
+echo "DerivedData retained for this run: $DERIVED_DATA_DIR"

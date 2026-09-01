@@ -39,12 +39,6 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
     /// Current speech request being processed
     private var currentRequest: AVSpeechSynthesisProviderRequest?
 
-    /// Serial queue for synthesis operations (legacy mode)
-    private let synthesisQueue = DispatchQueue(
-        label: "com.kokorovoice.synthesis",
-        qos: .userInteractive
-    )
-
     /// Flag indicating if the model is loaded and ready
     private var isModelReady = false
 
@@ -242,7 +236,7 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
             let appResourcesURL = appContentsURL.appendingPathComponent("Resources/Resources")
 
             print("KokoroSynthesisAudioUnit: Checking app resources at \(appResourcesURL.path)")
-            if fileManager.fileExists(atPath: appResourcesURL.path) {
+            if fileManager.fileExists(atPath: appResourcesURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
                 return appResourcesURL
             }
 
@@ -256,7 +250,7 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
 
         // Try extension's own bundle resources
         if let bundleURL = Bundle.main.resourceURL?.appendingPathComponent("Resources") {
-            if fileManager.fileExists(atPath: bundleURL.path) {
+            if fileManager.fileExists(atPath: bundleURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
                 return bundleURL
             }
         }
@@ -264,13 +258,14 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
         // Try app group container
         if let containerURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: Constants.appGroupIdentifier) {
             let modelsURL = containerURL.appendingPathComponent("Models")
-            if fileManager.fileExists(atPath: modelsURL.path) {
+            if fileManager.fileExists(atPath: modelsURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
                 return modelsURL
             }
         }
 
         // Try main bundle directly
-        if let bundleURL = Bundle.main.resourceURL {
+        if let bundleURL = Bundle.main.resourceURL,
+           fileManager.fileExists(atPath: bundleURL.appendingPathComponent("kokoro-v1_0.safetensors").path) {
             return bundleURL
         }
 
@@ -653,12 +648,12 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
         let ssml = speechRequest.ssmlRepresentation
         let voiceIdentifier = speechRequest.voice.identifier
 
-        // Process synthesis using dispatch queue
-        synthesisQueue.async { [self] in
-            Task {
-                await self.performSynthesisLegacy(ssml: ssml, voiceIdentifier: voiceIdentifier)
-            }
+        // Use the same cancellable task lifecycle as streaming synthesis.
+        let task = Task { @Sendable [weak self] in
+            guard let self else { return }
+            await self.performSynthesisLegacy(ssml: ssml, voiceIdentifier: voiceIdentifier)
         }
+        currentSynthesisTask = task
     }
 
     /// Perform the actual speech synthesis (legacy mode)
