@@ -94,6 +94,12 @@ if [ "$voice_count" != "36" ]; then
 fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+if ! codesign -d --entitlements - "$APP_EXTENSION" 2>/dev/null |
+     grep -A2 -F '[Key] com.apple.security.app-sandbox' |
+     grep -Fq '[Bool] true'; then
+    echo "[error] Refusing to install an extension without App Sandbox enabled" >&2
+    exit 1
+fi
 
 if [ -e "$INSTALL_PATH" ]; then
     if [ "$REPLACE_EXISTING" != "1" ]; then
@@ -113,7 +119,16 @@ INSTALL_PLACED=1
 installed_extension="$INSTALL_PATH/Contents/PlugIns/KokoroVoiceExtension.appex"
 pluginkit -a "$installed_extension"
 
-if ! pluginkit -m -A -D | grep -Fq 'app.openscout.kokorovoice.extension'; then
+registration_visible=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if pluginkit -m -A -D | grep -Fq 'app.openscout.kokorovoice.extension'; then
+        registration_visible=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$registration_visible" != "1" ]; then
     echo "[error] macOS did not report the registered Kokoro extension" >&2
     exit 1
 fi

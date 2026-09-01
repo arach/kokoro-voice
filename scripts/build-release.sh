@@ -62,10 +62,12 @@ APP_PATH="$DERIVED_DATA_DIR/Build/Products/Release/KokoroVoice.app"
 APP_EXECUTABLE="$APP_PATH/Contents/MacOS/KokoroVoice"
 APP_PLIST="$APP_PATH/Contents/Info.plist"
 APP_EXTENSION="$APP_PATH/Contents/PlugIns/KokoroVoiceExtension.appex"
+APP_FRAMEWORK="$APP_PATH/Contents/Frameworks/KokoroVoiceShared.framework"
+EXTENSION_ENTITLEMENTS="$PROJECT_DIR/KokoroVoiceExtension/KokoroVoiceExtension-unsigned.entitlements"
 APP_MODEL="$APP_PATH/Contents/Resources/Resources/kokoro-v1_0.safetensors"
 APP_VOICES="$APP_PATH/Contents/Resources/Resources/voices"
 
-for required_path in "$APP_EXECUTABLE" "$APP_PLIST" "$APP_EXTENSION" "$APP_MODEL" "$APP_VOICES"; do
+for required_path in "$APP_EXECUTABLE" "$APP_PLIST" "$APP_EXTENSION" "$APP_FRAMEWORK" "$EXTENSION_ENTITLEMENTS" "$APP_MODEL" "$APP_VOICES"; do
     if [ ! -e "$required_path" ]; then
         echo "[error] Built app is incomplete: $required_path is missing" >&2
         exit 1
@@ -83,8 +85,17 @@ if [ "$model_copy_count" != "1" ]; then
     exit 1
 fi
 
-codesign --force --deep --sign - --timestamp=none "$APP_PATH"
+codesign --force --sign - --timestamp=none "$APP_FRAMEWORK"
+codesign --force --sign - --timestamp=none --entitlements "$EXTENSION_ENTITLEMENTS" "$APP_EXTENSION"
+codesign --force --sign - --timestamp=none "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+if ! codesign -d --entitlements - "$APP_EXTENSION" 2>/dev/null |
+     grep -A2 -F '[Key] com.apple.security.app-sandbox' |
+     grep -Fq '[Bool] true'; then
+    echo "[error] Built extension is missing its required App Sandbox entitlement" >&2
+    exit 1
+fi
 
 ditto "$APP_PATH" "$DIST_DIR/KokoroVoice.app"
 cp "$SCRIPT_DIR/install.sh" "$DIST_DIR/install.sh"

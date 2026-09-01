@@ -16,6 +16,8 @@ The local hardening changes:
 - avoid embedding a second copy of the 327 MB model in the package resource bundle;
 - build into a per-run directory under `~/Library/Caches/codex-builds`;
 - validate the exact app, extension, models, and voice count;
+- ad-hoc sign the Audio Unit extension with the App Sandbox entitlement that
+  PluginKit requires;
 - use a distinct OpenScout bundle and Audio Unit identity;
 - ad-hoc sign the local app and fail closed if macOS registration fails;
 - never strip Gatekeeper quarantine attributes.

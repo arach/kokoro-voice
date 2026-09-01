@@ -121,7 +121,7 @@ targets:
     entitlements:
       path: KokoroVoiceExtension/KokoroVoiceExtension-unsigned.entitlements
       properties:
-        com.apple.security.app-sandbox: false
+        com.apple.security.app-sandbox: true
 
 schemes:
   KokoroVoice:
