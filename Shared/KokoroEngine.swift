@@ -32,6 +32,7 @@ public enum KokoroEngineError: Error, LocalizedError, Sendable {
     case modelLoadError(String)
     case voiceEmbeddingLoadError(String)
     case invalidAudioFormat
+    case inputTooLong
 
     public var errorDescription: String? {
         switch self {
@@ -47,7 +48,16 @@ public enum KokoroEngineError: Error, LocalizedError, Sendable {
             return "Failed to load voice embedding: \(message)"
         case .invalidAudioFormat:
             return "Invalid audio format"
+        case .inputTooLong:
+            return "Text exceeds Kokoro's token limit"
         }
+    }
+
+    /// The engine's over-limit refusal, used as the split signal by
+    /// `KokoroTextChunking`.
+    public var isInputTooLong: Bool {
+        if case .inputTooLong = self { return true }
+        return false
     }
 }
 
@@ -300,14 +310,14 @@ public actor KokoroEngine {
 
     // MARK: - Audio Generation
 
-    /// Generate audio from text using the specified voice
-    /// - Parameters:
-    ///   - text: The text to synthesize
-    ///   - voiceId: Voice identifier (e.g., "af_heart")
-    ///   - speed: Speech speed multiplier (1.0 = normal)
-    /// - Returns: Audio samples as Float32 array at 24kHz sample rate
-    /// - Throws: KokoroEngineError if synthesis fails
-    public func generateAudio(text: String, voiceId: String, speed: Float = 1.0) async throws -> [Float] {
+    /// Generate audio for one piece of text with no splitting.
+    /// - Throws: `KokoroEngineError.inputTooLong` when the text exceeds the
+    ///   engine's 510-phoneme-token limit — refused after G2P but before any
+    ///   model work, so a refused attempt is cheap. Streaming callers pair
+    ///   this with `KokoroTextChunking.synthesize(text:isTokenLimit:generate:consume:)`
+    ///   to publish audio piece by piece; buffered callers use
+    ///   `generateAudio(text:voiceId:speed:)`, which splits internally.
+    public func generateAudioPiece(text: String, voiceId: String, speed: Float = 1.0) async throws -> [Float] {
         guard isLoaded else {
             throw KokoroEngineError.modelNotLoaded
         }
@@ -333,7 +343,6 @@ public actor KokoroEngine {
         let language = KokoroLanguage.from(voiceId: effectiveVoiceId)
 
         do {
-            // Generate audio using KokoroTTS with MLXArray voice embedding
             // API: generateAudio(voice: MLXArray, language: Language, text: String, speed: Float) -> (AudioBuffer, timestamps)
             let (audioBuffer, _) = try tts.generateAudio(
                 voice: voiceEmbedding,
@@ -342,6 +351,12 @@ public actor KokoroEngine {
                 speed: speed
             )
             return audioBuffer
+        } catch KokoroTTS.KokoroTTSError.tooManyTokens {
+            throw KokoroEngineError.inputTooLong
+        } catch let error as CancellationError {
+            // A cancelled request must stay a CancellationError so the
+            // synthesis task's cancellation path handles it, not markFailed.
+            throw error
         } catch {
             throw KokoroEngineError.synthesisError(error.localizedDescription)
         }
@@ -350,6 +365,29 @@ public actor KokoroEngine {
         let estimatedDuration = Double(text.count) * 0.06 / Double(speed)  // ~60ms per character
         return generateSilence(duration: estimatedDuration)
         #endif
+    }
+
+    /// Generate audio from text using the specified voice
+    /// - Parameters:
+    ///   - text: The text to synthesize
+    ///   - voiceId: Voice identifier (e.g., "af_heart")
+    ///   - speed: Speech speed multiplier (1.0 = normal)
+    /// - Returns: Audio samples as Float32 array at 24kHz sample rate
+    /// - Throws: KokoroEngineError if synthesis fails
+    public func generateAudio(text: String, voiceId: String, speed: Float = 1.0) async throws -> [Float] {
+        // Text over the engine's 510-phoneme-token limit is refused before
+        // any model work; bisect at natural boundaries until every piece
+        // fits and splice the audio, so a long utterance renders instead of
+        // failing silently. The whole rendering is held in memory — callers
+        // that can publish progressively should drive
+        // KokoroTextChunking.synthesize(consume:) over generateAudioPiece.
+        try await KokoroTextChunking.synthesize(
+            text: text,
+            isTokenLimit: { ($0 as? KokoroEngineError)?.isInputTooLong == true },
+            generate: { piece in
+                try await self.generateAudioPiece(text: piece, voiceId: voiceId, speed: speed)
+            }
+        )
     }
 
     /// Generate silence of the specified duration

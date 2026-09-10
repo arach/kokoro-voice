@@ -66,5 +66,11 @@ let package = Package(
             dependencies: ["KokoroVoiceShared"],
             path: "Tests/StreamingAudioBufferTests"
         ),
+
+        .testTarget(
+            name: "KokoroTextChunkingTests",
+            dependencies: ["KokoroVoiceShared"],
+            path: "Tests/KokoroTextChunkingTests"
+        ),
     ]
 )

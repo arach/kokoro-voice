@@ -480,37 +480,42 @@ public final class KokoroSynthesisAudioUnit: AVSpeechSynthesisProviderAudioUnit,
                 // Check for cancellation before expensive synthesis
                 try Task.checkCancellation()
 
-                // Generate audio
-                let audio = try await KokoroEngine.shared.generateAudio(
+                // Generate audio piece by piece: each piece the engine
+                // accepts is validated, split to chunk size, and enqueued —
+                // riding the ring buffer's backpressure — before the next
+                // piece is generated. One oversized segment therefore never
+                // materializes its full audio ahead of playback, and a
+                // buffer reset (new request, cold-model drain) stops
+                // generation at the next piece.
+                let completed = try await KokoroTextChunking.synthesize(
                     text: text,
-                    voiceId: voiceId,
-                    speed: segment.rate
+                    isTokenLimit: { ($0 as? KokoroEngineError)?.isInputTooLong == true },
+                    generate: { piece in
+                        try await KokoroEngine.shared.generateAudioPiece(
+                            text: piece,
+                            voiceId: voiceId,
+                            speed: segment.rate
+                        )
+                    },
+                    consume: { audio in
+                        // Validate audio samples (replace NaN/Inf with silence)
+                        let validated = audio.map { sample -> Float in
+                            sample.isFinite ? sample : 0.0
+                        }
+                        // Enqueue in maxChunkSize slices (prevents poll-wait
+                        // deadlock for pieces larger than the ring buffer)
+                        var offset = 0
+                        while offset < validated.count {
+                            let end = min(offset + Self.maxChunkSize, validated.count)
+                            let chunk = Array(validated[offset..<end])
+                            let shouldContinue = await buffer.enqueue(.audio(chunk))
+                            if !shouldContinue { return false } // Buffer was reset
+                            offset = end
+                        }
+                        return true
+                    }
                 )
-
-                // Validate audio samples (replace NaN/Inf with silence)
-                let validated = audio.map { sample -> Float in
-                    if sample.isNaN || sample.isInfinite {
-                        return 0.0
-                    }
-                    return sample
-                }
-
-                // Split if oversized (prevents poll-wait deadlock for huge segments)
-                if validated.count > Self.maxChunkSize {
-                    // Split into multiple chunks
-                    var offset = 0
-                    while offset < validated.count {
-                        let end = min(offset + Self.maxChunkSize, validated.count)
-                        let chunk = Array(validated[offset..<end])
-                        let shouldContinue = await buffer.enqueue(.audio(chunk))
-                        if !shouldContinue { return } // Buffer was reset
-                        offset = end
-                    }
-                } else {
-                    // Normal case: enqueue as single chunk
-                    let shouldContinue = await buffer.enqueue(.audio(validated))
-                    if !shouldContinue { return } // Buffer was reset
-                }
+                if !completed { return } // Buffer was reset
             }
 
             buffer.markComplete()
