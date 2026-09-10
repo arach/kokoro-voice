@@ -35,8 +35,10 @@ cd dist
 ./install.sh
 ```
 
-After installation, launch `KokoroVoice.app`, relaunch OpenScout, then select
-`On Device · System voice` and a Kokoro voice in OpenScout Settings → Voice.
+After installation, relaunch OpenScout, then select `On Device · System voice`
+and a Kokoro voice in OpenScout Settings → Voice. Open `KokoroVoice.app` only
+when you want to manage voices or hear a preview; closing its last window quits
+the manager and does not unregister the speech provider.
 
 The ad-hoc signature is suitable only for this local machine. Distribution
 requires a real Apple signing identity, provisioning, notarization, complete

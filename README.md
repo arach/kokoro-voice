@@ -151,10 +151,13 @@ swift test
 
 1. **Launch KokoroVoice app**
 2. **Enable desired voices** using the toggles
-3. **Wait ~30 seconds** for system registration
-4. **Open System Settings**:
+3. **Open System Settings**:
    - Accessibility → Spoken Content → System Voice
    - Select a Kokoro voice
+
+The model loads only when you request a preview or speech. Closing the app's
+last window quits the manager; its registered voices remain available through
+the system speech-provider extension.
 
 ### Testing Voices
 

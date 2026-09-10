@@ -4,7 +4,6 @@
 // Main application entry point for the Kokoro Voice host app.
 
 import SwiftUI
-import KokoroVoiceShared
 
 @main
 struct KokoroVoiceApp: App {
@@ -50,37 +49,11 @@ struct KokoroVoiceApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        print("KokoroVoice: Application launched")
-
-        // Load model in background
-        Task { [weak self] in
-            await self?.loadModel()
-        }
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        print("KokoroVoice: Application terminating")
-    }
-
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // Keep app running in background to maintain voice registration
-        return false
-    }
-
-    private func loadModel() async {
-        guard let resourceURL = ModelResourceLocator.firstAvailableURL() else {
-            print("KokoroVoice: Model not found in the embedded extension")
-            return
-        }
-
-        do {
-            try await KokoroEngine.shared.loadModel(from: resourceURL)
-            print("KokoroVoice: Model loaded successfully from \(resourceURL.path)")
-        } catch {
-            print("KokoroVoice: Failed to load model from \(resourceURL.path): \(error)")
-        }
+        // PluginKit owns the registered speech-provider extension. The host is
+        // only a manager and preview surface, so keeping it alive would retain
+        // a second copy of the neural model without helping system speech.
+        true
     }
 }
 

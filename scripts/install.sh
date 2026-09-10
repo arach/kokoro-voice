@@ -147,4 +147,4 @@ fi
 killall speechsynthesisd 2>/dev/null || true
 
 echo "Installed and registered: $INSTALL_PATH"
-echo "Launch the app once, then select a Kokoro voice in OpenScout Settings > Voice."
+echo "Open the app to manage or preview voices, or select one directly in OpenScout Settings > Voice."
