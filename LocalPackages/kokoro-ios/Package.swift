@@ -11,15 +11,18 @@ let package = Package(
   products: [
     .library(
       name: "KokoroSwift",
-      type: .dynamic,
+      type: .static,
       targets: ["KokoroSwift"]
     ),
   ],
   dependencies: [
-    .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.29.1"),
+    .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.29.1"),
     // .package(url: "https://github.com/mlalma/eSpeakNGSwift", from: "1.0.1"),
-    .package(url: "https://github.com/mlalma/MisakiSwift", from: "1.0.4"),
-    .package(url: "https://github.com/mlalma/MLXUtilsLibrary.git", from: "0.0.6")
+    // Keep Misaki and Kokoro in the final extension's single static linkage
+    // unit. The upstream dynamic products each embed copies of MLX and trigger
+    // duplicate Objective-C class registration at runtime.
+    .package(path: "../MisakiSwift"),
+    .package(url: "https://github.com/mlalma/MLXUtilsLibrary.git", exact: "0.0.6")
   ],
   targets: [
     .target(
@@ -34,7 +37,7 @@ let package = Package(
         .product(name: "MLXUtilsLibrary", package: "MLXUtilsLibrary")
       ],
       resources: [
-       .copy("../../Resources/")
+       .copy("../../Resources/config.json")
       ]
     ),
     .testTarget(

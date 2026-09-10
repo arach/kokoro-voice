@@ -4,7 +4,6 @@
 // Main application entry point for the Kokoro Voice host app.
 
 import SwiftUI
-import KokoroVoiceShared
 
 @main
 struct KokoroVoiceApp: App {
@@ -48,61 +47,13 @@ struct KokoroVoiceApp: App {
 
 // MARK: - App Delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        print("KokoroVoice: Application launched")
-
-        // Load model in background
-        Task {
-            await loadModel()
-        }
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        print("KokoroVoice: Application terminating")
-    }
-
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // Keep app running in background to maintain voice registration
-        return false
-    }
-
-    private func loadModel() async {
-        // Try multiple locations for model files
-        let possiblePaths = [
-            // 1. App bundle resources (production)
-            Bundle.main.resourceURL,
-            // 2. Development: project Resources directory
-            Bundle.main.bundleURL
-                .deletingLastPathComponent() // Contents
-                .deletingLastPathComponent() // KokoroVoice.app
-                .deletingLastPathComponent() // Debug
-                .deletingLastPathComponent() // Products
-                .deletingLastPathComponent() // Build
-                .deletingLastPathComponent() // DerivedData/...
-                .appendingPathComponent("SourcePackages")
-                .deletingLastPathComponent()
-                .appendingPathComponent("Resources"),
-            // 3. Fallback: hardcoded development path
-            URL(fileURLWithPath: "/Users/tag/Documents/workspace-playground/kokoro-voice/KokoroVoice/Resources")
-        ].compactMap { $0 }
-
-        for resourceURL in possiblePaths {
-            let modelFile = resourceURL.appendingPathComponent("kokoro-v1_0.safetensors")
-            if FileManager.default.fileExists(atPath: modelFile.path) {
-                do {
-                    try await KokoroEngine.shared.loadModel(from: resourceURL)
-                    print("KokoroVoice: Model loaded successfully from \(resourceURL.path)")
-                    return
-                } catch {
-                    print("KokoroVoice: Failed to load model from \(resourceURL.path): \(error)")
-                }
-            }
-        }
-
-        print("KokoroVoice: Model not found. Please download model files to Resources/")
-        print("KokoroVoice: Expected: kokoro-v1_0.safetensors and voices/*.safetensors")
+        // PluginKit owns the registered speech-provider extension. The host is
+        // only a manager and preview surface, so keeping it alive would retain
+        // a second copy of the neural model without helping system speech.
+        true
     }
 }
 

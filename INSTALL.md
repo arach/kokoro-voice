@@ -47,8 +47,11 @@ The script will:
 ## First Launch
 
 1. **Open KokoroVoice** from Applications
-2. **Wait for models to load** (30-60 seconds on first launch)
-3. The app will display available voices when ready
+2. The app immediately displays the available voices
+3. Play a preview if you want to test one; the neural model loads on demand
+
+Closing the last KokoroVoice window quits the manager. The registered voices
+remain available to macOS and other apps without a background process.
 
 ## Enable Voices in macOS
 
@@ -108,13 +111,15 @@ xattr -cr /Applications/KokoroVoice.app
 
 Then try opening the app again.
 
-### Model loading is slow
+### The first preview or spoken request is slow
 
-First launch loads ~326MB of neural network weights. Subsequent launches are faster. If loading takes more than 2 minutes:
+The first request loads ~326MB of neural network weights into the process doing
+the synthesis. Later system speech requests are faster while macOS keeps the
+provider warm. If loading takes more than 2 minutes:
 
 1. Check that model files exist:
    ```bash
-   ls -la /Applications/KokoroVoice.app/Contents/Resources/
+   ls -la /Applications/KokoroVoice.app/Contents/PlugIns/KokoroVoiceExtension.appex/Contents/Resources/Resources/
    ```
 
 2. Re-download models if needed:

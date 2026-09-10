@@ -32,13 +32,13 @@
                     <key>description</key>
                     <string>Kokoro Neural TTS</string>
                     <key>manufacturer</key>
-                    <string>KOKO</string>
+                    <string>OSCT</string>
                     <key>name</key>
                     <string>Kokoro: KokoroVoice</string>
                     <key>sandboxSafe</key>
                     <true/>
                     <key>subtype</key>
-                    <string>kokr</string>
+                    <string>KOKV</string>
                     <key>tags</key>
                     <array>
                         <string>Speech Synthesizer</string>

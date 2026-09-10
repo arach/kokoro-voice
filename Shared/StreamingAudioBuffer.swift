@@ -104,6 +104,11 @@ public final class StreamingAudioBuffer: @unchecked Sendable {
 
     private var lock = os_unfair_lock()
 
+    /// Coordinates offline consumers with the asynchronous synthesis producer.
+    /// Realtime consumers never touch this condition; they continue to use
+    /// `readFrames`, whose try-lock contract remains nonblocking.
+    private let readabilityCondition = NSCondition()
+
     // Ring buffer for chunks
     private var chunkRing: [AudioChunk?]
     private var ringHead: Int = 0  // Next slot to read
@@ -192,12 +197,17 @@ public final class StreamingAudioBuffer: @unchecked Sendable {
             return true
         }
 
+        if enqueued {
+            signalReadabilityChange()
+        }
+
         return enqueued
     }
 
     /// Mark synthesis as complete (success)
     public func markComplete() {
         withLock { synthesisComplete = true }
+        signalReadabilityChange()
     }
 
     /// Mark synthesis as failed - remaining audio will play, then error signaled
@@ -206,6 +216,7 @@ public final class StreamingAudioBuffer: @unchecked Sendable {
             synthesisComplete = true
             synthesisError = error
         }
+        signalReadabilityChange()
     }
 
     // MARK: - Consumer Methods (Render Thread)
@@ -335,6 +346,58 @@ public final class StreamingAudioBuffer: @unchecked Sendable {
         )
     }
 
+    /// Read frames for an offline render operation.
+    ///
+    /// Unlike `readFrames`, this method waits for asynchronous synthesis instead
+    /// of converting producer latency or a buffer underrun into output silence.
+    /// Apple explicitly permits an audio unit whose `isRenderingOffline` flag is
+    /// set to block while secondary-worker data becomes ready. Callers must never
+    /// use this method from a realtime render context.
+    ///
+    /// The method returns when it has filled `count` frames or when synthesis has
+    /// completed, failed, or been reset. A terminal partial read contains only
+    /// frames intentionally enqueued by the producer; the caller decides how to
+    /// initialize the unused tail of its output buffer.
+    public func readFramesBlocking(
+        into output: UnsafeMutablePointer<Float32>,
+        count: AVAudioFrameCount
+    ) -> ReadResult {
+        var framesRead: AVAudioFrameCount = 0
+        var wasSpeech = false
+        var hadError = false
+
+        while framesRead < count {
+            let result = readFrames(
+                into: output + Int(framesRead),
+                count: count - framesRead
+            )
+
+            framesRead += result.framesRead
+            wasSpeech = wasSpeech || result.wasSpeech
+            hadError = hadError || result.hadError
+
+            if result.isComplete {
+                return ReadResult(
+                    framesRead: framesRead,
+                    isComplete: true,
+                    hadError: hadError,
+                    wasSpeech: wasSpeech
+                )
+            }
+
+            if framesRead < count {
+                waitUntilReadableOrTerminal()
+            }
+        }
+
+        return ReadResult(
+            framesRead: framesRead,
+            isComplete: false,
+            hadError: hadError,
+            wasSpeech: wasSpeech
+        )
+    }
+
     /// Check if buffer has minimum audio to start playback
     /// Uses trylock for RT-safety - returns false if lock contended (safe default)
     public var hasMinimumBuffer: Bool {
@@ -376,6 +439,7 @@ public final class StreamingAudioBuffer: @unchecked Sendable {
             totalFramesRead = 0
             hasLoggedSegmentLimit = false
         }
+        signalReadabilityChange()
     }
 
     // MARK: - Lock Helper
@@ -384,5 +448,27 @@ public final class StreamingAudioBuffer: @unchecked Sendable {
         os_unfair_lock_lock(&lock)
         defer { os_unfair_lock_unlock(&lock) }
         return body()
+    }
+
+    /// Wait until a producer state change makes data readable or the stream
+    /// terminal. The condition is acquired before the second state check so a
+    /// signal cannot be lost between checking and sleeping.
+    private func waitUntilReadableOrTerminal() {
+        readabilityCondition.lock()
+        defer { readabilityCondition.unlock() }
+
+        while true {
+            let canProceed = withLock {
+                ringCount > 0 || synthesisComplete || isReset
+            }
+            if canProceed { return }
+            readabilityCondition.wait()
+        }
+    }
+
+    private func signalReadabilityChange() {
+        readabilityCondition.lock()
+        readabilityCondition.broadcast()
+        readabilityCondition.unlock()
     }
 }
